@@ -96,3 +96,24 @@ Il est également possible d'exécuter chaque étape indépendamment :
 ## Notes
 
 Le package boost-mediaease est installé dans /tmp/boost et est utilisé uniquement lors de la compilation. Il n'est pas inclus comme dépendance dans les packages .deb finaux.
+
+## Problèmes de compatibilité avec Boost
+
+Les versions 1.2.x de libtorrent-rasterbar ne sont pas compatibles avec les versions récentes de Boost (1.70 et supérieures), car l'API de Boost.Asio a subi des changements importants.
+
+Pour résoudre ce problème, nos scripts détectent automatiquement lorsqu'une version 1.2.x de libtorrent est compilée et utilisent Boost 1.69.0 préinstallé.
+
+### Versions de Boost utilisées
+
+- **Pour libtorrent 1.2.x** : Boost 1.69.0 (package `boost-mediaease_1.69.0-1build1_amd64.deb`) est utilisé
+- **Pour libtorrent 2.0.x et supérieur** : Boost 1.88.0 (package `boost-mediaease_1.88.0_rc1-1build1_amd64.deb`) est utilisé
+
+Les packages Boost nécessaires sont disponibles dans le répertoire `tools/` et sont installés automatiquement par les scripts.
+
+### Compilation manuelle
+
+```bash
+./build-lib.sh 2.0.9
+./build-bindings.sh 2.0.9
+./build-packages.sh 2.0.9
+```

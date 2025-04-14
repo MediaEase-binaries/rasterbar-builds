@@ -1,227 +1,310 @@
 name: Build libtorrent-rasterbar
 
+permissions: write-all
+
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'libtorrent-rasterbar version to build'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - '2.0.5'
+          - '2.0.6'
+          - '2.0.7'
+          - '2.0.8'
+          - '2.0.9'
+          - '2.0.10'
+          - '2.0.11'
 
 jobs:
   build:
+    name: Build libtorrent-rasterbar ${{ matrix.version }}
     runs-on: ubuntu-latest
+    env:
+      COMMITTER_NAME: ${{ secrets.COMMITTER_NAME }}
+      COMMITTER_EMAIL: ${{ secrets.COMMITTER_EMAIL }}
+    
     strategy:
       matrix:
-        version: [ "2.0.11" ]  # Version de libtorrent-rasterbar à compiler
-    env:
-      ARCHITECTURE: "amd64"
+        include:
+          - version: "2.0.5"
+          - version: "2.0.6"
+          - version: "2.0.7"
+          - version: "2.0.8"
+          - version: "2.0.9"
+          - version: "2.0.10"
+          - version: "2.0.11"
+      fail-fast: false
+
     steps:
-      - name: Update packages
-        run: sudo apt-get update --fix-missing
-
-      - uses: tecolicom/actions-use-apt-tools@v1
-        with:
-          tools: build-essential libssl-dev python3-dev python3-setuptools python3-pip cmake ninja-build git curl wget zip unzip
-          cache: false
-
-      - name: Check if a release exists
-        id: check_release
+      - name: Pre-check version
+        id: pre-check
         run: |
-          set +e
-          gh release view --latest > /dev/null 2>&1
-          if [ $? -ne 0 ]; then
-            echo "release_exists=false" >> $GITHUB_OUTPUT
+          if gh release view "v${{ matrix.version }}" &>/dev/null; then
+            echo "Version ${{ matrix.version }} already has a release, skipping"
+            echo "should_build=false" >> $GITHUB_OUTPUT
           else
-            echo "release_exists=true" >> $GITHUB_OUTPUT
+            echo "Version ${{ matrix.version }} needs to be built"
+            echo "should_build=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Determine next build number
-        id: determine_build
-        if: ${{ steps.check_release.outputs.release_exists == 'true' }}
+      - name: Setup variables
+        id: vars
+        if: steps.pre-check.outputs.should_build == 'true'
         run: |
-          ASSETS=$(gh release view --latest --json assets --jq '.assets[].name')
-          echo "Existing assets: $ASSETS"
-          build_numbers=$(echo "$ASSETS" | grep -oP 'libtorrent-rasterbar_${{ matrix.version }}-1build\K([0-9]+)(?=_amd64\.deb)')
-          if [ -z "$build_numbers" ]; then
-            next_build=1
+          if [ "${{ matrix.version }}" == "2.0.10" ]; then
+            stability="stable"
+            boost_version="1.82.0"
+          elif [ "${{ matrix.version }}" == "2.0.11" ]; then
+            stability="next"
+            boost_version="1.88.0_rc1"
           else
-            max_build=$(echo "$build_numbers" | sort -n | tail -n1)
-            next_build=$((max_build + 1))
+            stability="next"
+            boost_version="1.75.0"
           fi
-          echo "next_build=$next_build" >> $GITHUB_OUTPUT
-
-      - name: Check if asset for next build already exists
-        id: check_asset
-        if: ${{ steps.check_release.outputs.release_exists == 'true' }}
-        run: |
-          next_build=${{ steps.determine_build.outputs.next_build }}
-          ASSET_NAME="libtorrent-rasterbar_${{ matrix.version }}-1build${next_build}_${{ env.ARCHITECTURE }}.deb"
-          echo "Looking for asset: $ASSET_NAME"
-          ASSETS=$(gh release view --latest --json assets --jq '.assets[].name')
-          if echo "$ASSETS" | grep -q "$ASSET_NAME"; then
-            echo "skip_build=true" >> $GITHUB_OUTPUT
-          else
-            echo "skip_build=false" >> $GITHUB_OUTPUT
-          fi
+          echo "stability=${stability}" >> $GITHUB_OUTPUT
+          echo "boost_version=${boost_version}" >> $GITHUB_OUTPUT
+          echo "package_prefix=libtorrent-rasterbar" >> $GITHUB_OUTPUT
+          echo "dev_package_prefix=libtorrent-rasterbar-dev" >> $GITHUB_OUTPUT
+          echo "python_package_prefix=python3-libtorrent" >> $GITHUB_OUTPUT
+          echo "metadata_script=tools/generate_metadata.sh" >> $GITHUB_OUTPUT
+          echo "package_script=tools/generate_package.sh" >> $GITHUB_OUTPUT
+          echo "source_dir=$PWD/libtorrent" >> $GITHUB_OUTPUT
+          echo "boost_root=/tmp/boost" >> $GITHUB_OUTPUT
+          echo "runtime_package_script=tools/packages/libtorrent-rasterbar/build.sh" >> $GITHUB_OUTPUT
+          echo "runtime_package_control=tools/packages/libtorrent-rasterbar/control-runtime" >> $GITHUB_OUTPUT
+          echo "dev_package_control=tools/packages/libtorrent-rasterbar/control-dev" >> $GITHUB_OUTPUT
+          echo "python_package_control=tools/packages/libtorrent-rasterbar/control-python" >> $GITHUB_OUTPUT
+          echo "package_full_name=${package_prefix}-${stability}_${{ matrix.version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
+          echo "python_package_full_name=${python_package_prefix}-${stability}_${{ matrix.version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
+          echo "dev_package_full_name=${dev_package_prefix}-${stability}_${{ matrix.version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
 
       - name: Checkout repository
+        if: steps.pre-check.outputs.should_build == 'true'
         uses: actions/checkout@v4
 
-      - name: Run build.sh
-        id: build_script
-        if: >
-          ${{ steps.check_release.outputs.release_exists == 'false' ||
-            steps.check_asset.outputs.skip_build == 'false' }}
-        run: |
-          chmod +x build.sh
-          ./build.sh "${{ matrix.version }}"
-          
-          # Collect DEB files
-          deb_files=()
-          while IFS= read -r file; do
-            deb_files+=("$file")
-          done < <(find . -name "*.deb" -print)
-          
-          echo "Found DEB files: ${deb_files[*]}"
-          
-          # Process libtorrent-rasterbar package
-          lib_deb=$(find . -name "libtorrent-rasterbar_*.deb" -print -quit)
-          echo "libtorrent-rasterbar package: $lib_deb"
-          
-          if [ -z "${{ steps.determine_build.outputs.next_build }}" ]; then
-            next_build=1
-          else
-            next_build="${{ steps.determine_build.outputs.next_build }}"
-          fi
-          build_number="1build${next_build}"
-          
-          # Rename libtorrent-rasterbar package
-          lib_deb_basename="$(basename "$lib_deb")"
-          lib_package_name=$(echo "$lib_deb_basename" | sed -E 's/^(.*)-1build[0-9]+(.*)\.deb$/\1/')
-          lib_ending=$(echo "$lib_deb_basename" | sed -E 's/^(.*)-1build[0-9]+(.*)\.deb$/\2/')
-          new_lib_deb="${lib_package_name}-${build_number}${lib_ending}.deb"
-          echo "New libtorrent-rasterbar package name: $new_lib_deb"
-          if [ "$lib_deb" != "./$new_lib_deb" ]; then
-            mv "$lib_deb" "./$new_lib_deb"
-          fi
-          
-          # Process python3-libtorrent-rasterbar package
-          py_deb=$(find . -name "python3-libtorrent-rasterbar_*.deb" -print -quit)
-          echo "python3-libtorrent-rasterbar package: $py_deb"
-          
-          # Rename python3-libtorrent-rasterbar package
-          py_deb_basename="$(basename "$py_deb")"
-          py_package_name=$(echo "$py_deb_basename" | sed -E 's/^(.*)-1build[0-9]+(.*)\.deb$/\1/')
-          py_ending=$(echo "$py_deb_basename" | sed -E 's/^(.*)-1build[0-9]+(.*)\.deb$/\2/')
-          new_py_deb="${py_package_name}-${build_number}${py_ending}.deb"
-          echo "New python3-libtorrent-rasterbar package name: $new_py_deb"
-          if [ "$py_deb" != "./$new_py_deb" ]; then
-            mv "$py_deb" "./$new_py_deb"
-          fi
-          
-          echo "deb_files=$new_lib_deb $new_py_deb" >> $GITHUB_OUTPUT
+      - name: Checkout tools repository
+        if: steps.pre-check.outputs.should_build == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: MediaEase-binaries/tools
+          path: tools
 
-      - name: Post-process artifacts
-        if: ${{ steps.build_script.outputs.deb_files != '' && (steps.check_release.outputs.release_exists == 'false' || steps.check_asset.outputs.skip_build == 'false') }}
+      - name: Build and install boost
+        if: steps.pre-check.outputs.should_build == 'true'
         run: |
-          if [ -z "${{ steps.determine_build.outputs.next_build }}" ]; then
-            next_build=1
-          else
-            next_build="${{ steps.determine_build.outputs.next_build }}"
-          fi
-          build="1build${next_build}"
-          
-          # Process libtorrent-rasterbar package
-          lib_deb=$(find . -name "libtorrent-rasterbar_*.deb" -print -quit)
-          lib_checksum=$(sha256sum "$lib_deb" | awk '{print $1}')
-          CURRENT_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          lib_package_id=$(basename "$lib_deb" .deb)
-          lib_json_file="${lib_package_id}.json"
-          
-          jq -n \
-            --arg package_id "$lib_package_id" \
-            --arg version "${{ matrix.version }}" \
-            --arg build "$build" \
-            --arg checksum_sha256 "$lib_checksum" \
-            --arg build_date "$CURRENT_DATE" \
-            --arg category "libtorrent" \
-            --arg tag "rasterbar" \
-            --argjson distribution '["bookworm"]' \
-            '{
-              package_id: $package_id,
-              version: $version,
-              build: $build,
-              checksum_sha256: $checksum_sha256,
-              build_date: $build_date,
-              category: $category,
-              tag: $tag,
-              distribution: $distribution
-            }' > "$lib_json_file"
-          
-          # Process python3-libtorrent-rasterbar package
-          py_deb=$(find . -name "python3-libtorrent-rasterbar_*.deb" -print -quit)
-          py_checksum=$(sha256sum "$py_deb" | awk '{print $1}')
-          py_package_id=$(basename "$py_deb" .deb)
-          py_json_file="${py_package_id}.json"
-          
-          jq -n \
-            --arg package_id "$py_package_id" \
-            --arg version "${{ matrix.version }}" \
-            --arg build "$build" \
-            --arg checksum_sha256 "$py_checksum" \
-            --arg build_date "$CURRENT_DATE" \
-            --arg category "libtorrent" \
-            --arg tag "python" \
-            --argjson distribution '["bookworm"]' \
-            '{
-              package_id: $package_id,
-              version: $version,
-              build: $build,
-              checksum_sha256: $checksum_sha256,
-              build_date: $build_date,
-              category: $category,
-              tag: $tag,
-              distribution: $distribution
-            }' > "$py_json_file"
-          
-          ls -l *.json
+            boost_version="${{ steps.vars.outputs.boost_version }}"
+            echo "Building Boost ${boost_version}..."
+            chmod +x tools/packages/boost/build.sh
+            tools/packages/boost/build.sh "${boost_version}" --nobuild
+            find . -type f -executable -name "b2" -print 2>/dev/null | head -n 1 | xargs -I{} sudo ln -sf {} /usr/bin/b2 || echo "ERROR: No executable b2 file found"
+            find . -type f -executable -name "b2" -print 2>/dev/null | head -n 1 | xargs -I{} sudo ln -sf {} b2 || echo "ERROR: No executable b2 file found"
+            rm -f *.deb
+            echo "Boost ${boost_version} installed successfully"
 
-      - name: Upload artifacts
-        if: >
-          ${{ steps.check_release.outputs.release_exists == 'false' ||
-            steps.check_asset.outputs.skip_build == 'false' }}
+      - name: Clone libtorrent
+        if: steps.pre-check.outputs.should_build == 'true'
+        run: |
+          git clone --recursive --branch "v${{ matrix.version }}" \
+            https://github.com/arvidn/libtorrent.git ${{ steps.vars.outputs.source_dir }}
+          cd ${{ steps.vars.outputs.source_dir }}
+          git submodule update --init --recursive
+          git --no-pager log -1 --oneline
+
+      - name: Build libtorrent-rasterbar
+        if: steps.pre-check.outputs.should_build == 'true'
+        run: |
+          chmod +x ${{ steps.vars.outputs.runtime_package_script }}
+          ${{ steps.vars.outputs.runtime_package_script }} full_packages
+
+      - name: Create DEBIAN control files
+        if: steps.pre-check.outputs.should_build == 'true'
+        run: |
+          stability="${{ steps.vars.outputs.stability }}"
+          real_runtime_package_control="libtorrent/full_packages/pkg_runtime/DEBIAN/control"
+          real_dev_package_control="libtorrent/full_packages/pkg_dev/DEBIAN/control"
+          real_python_package_control="libtorrent/full_packages/pkg_python/DEBIAN/control"
+          declare -A package_prefixes=(
+            ["runtime"]="${{ steps.vars.outputs.package_prefix }}"
+            ["dev"]="${{ steps.vars.outputs.dev_package_prefix }}"
+            ["python"]="${{ steps.vars.outputs.python_package_prefix }}"
+          )
+          declare -A control_files=(
+            ["runtime"]="${{ steps.vars.outputs.runtime_package_control }}"
+            ["dev"]="${{ steps.vars.outputs.dev_package_control }}"
+            ["python"]="${{ steps.vars.outputs.python_package_control }}"
+          )
+          declare -A real_control_files=(
+            ["runtime"]="$real_runtime_package_control"
+            ["dev"]="$real_dev_package_control"
+            ["python"]="$real_python_package_control"
+          )
+          declare -A package_full_names=(
+            ["runtime"]="${{ steps.vars.outputs.package_full_name }}"
+            ["dev"]="${{ steps.vars.outputs.dev_package_full_name }}"
+            ["python"]="${{ steps.vars.outputs.python_package_full_name }}"
+          )
+          for pkg in runtime dev python; do
+            control="${control_files[$pkg]}"
+            real_control="${real_control_files[$pkg]}"
+            prefix="${package_prefixes[$pkg]}"
+            PKG_DIR="libtorrent/full_packages/pkg_${pkg}"
+            echo "Processing package type: $pkg"
+            echo "  - Control file: $control"
+            echo "  - Target real control file: $real_control"
+            echo "  - Using package prefix: $prefix"
+            echo "  - Package directory: $PKG_DIR"
+            sed -i "s/^Package:.*/Package: ${prefix}-${stability}/" "$control"
+            sed -i "s/^Version:.*/Version: ${{ matrix.version }}-1build1/" "$control"
+            sed -i "s/^Maintainer:.*/Maintainer: ${COMMITTER_NAME} <${COMMITTER_EMAIL}>/" "$control"
+            sed -i "s/\$ARCHITECTURE/amd64/g" "$control"
+            sed -i "s/\$LIBTORRENT_VERSION/${{ matrix.version }}/g" "$control"
+            sed -i "s/@DATE@/$(date +%Y-%m-%d)/g" "$control"
+            sed -i "s/Installed-Size:.*/Installed-Size: $(du -s $PKG_DIR | awk '{print $1}')/" "$control"
+            dest_dir=$(dirname "$real_control")
+            if [ ! -d "$dest_dir" ]; then
+              mkdir -p "$dest_dir"
+            fi
+            cp "$control" "$real_control"
+            find "${PKG_DIR}" -type f -exec file {} \; | grep ELF | cut -d: -f1 | xargs --no-run-if-empty strip --strip-unneeded
+            find "${PKG_DIR}" -type f ! -path "./DEBIAN/*" -exec md5sum {} \; > "${PKG_DIR}/DEBIAN/md5sums"
+            dpkg-deb --build -Zxz -z9 -Sextreme --root-owner-group "${PKG_DIR}" "${package_full_names[$pkg]}" 
+          done
+          mkdir -p artifacts
+          find . -type f -name "*.deb" -exec mv {} artifacts/ \;
+
+      - name: Generate metadata
+        if: steps.pre-check.outputs.should_build == 'true'
+        run: |
+          stability="${{ steps.vars.outputs.stability }}"
+          cd artifacts
+          chmod +x ../${{ steps.vars.outputs.metadata_script }}
+          for deb_file in *.deb; do
+            ../${{ steps.vars.outputs.metadata_script }} \
+              --category "libtorrent" \
+              --tag "${stability}" \
+              --version "${{ matrix.version }}" \
+              "$deb_file"
+          done
+
+      - name: Upload as Artifact
+        if: steps.pre-check.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: libtorrent-${{ matrix.version }}
-          path: |
-            *.deb
-            *.json
+          path: artifacts/*
           retention-days: 7
-  
-  create_release:
-    name: Create GitHub Release
-    runs-on: ubuntu-latest
-    needs: build
 
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        include:
+          - version: "2.0.5"
+          - version: "2.0.6"
+          - version: "2.0.7"
+          - version: "2.0.8"
+          - version: "2.0.9"
+          - version: "2.0.10"
+          - version: "2.0.11"
+      fail-fast: false
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Setup variables
+        id: vars
+        run: |
+          if [ "${{ matrix.version }}" == "2.0.10" ]; then
+            stability="stable"
+            boost_version="1.78.0"
+          elif [ "${{ matrix.version }}" == "2.0.11" ]; then
+            stability="next"
+            boost_version="1.88.0_rc1"
+          else
+            stability="next"
+          fi
+          echo "stability=${stability}" >> $GITHUB_OUTPUT
+          echo "boost_version=${boost_version}" >> $GITHUB_OUTPUT
+          echo "package_prefix=libtorrent-rasterbar" >> $GITHUB_OUTPUT
+          echo "dev_package_prefix=libtorrent-rasterbar-dev" >> $GITHUB_OUTPUT
+          echo "python_package_prefix=python3-libtorrent" >> $GITHUB_OUTPUT
+          echo "metadata_script=tools/generate_metadata.sh" >> $GITHUB_OUTPUT
+          echo "package_script=tools/generate_package.sh" >> $GITHUB_OUTPUT
+          echo "source_dir=$PWD/libtorrent" >> $GITHUB_OUTPUT
+          echo "boost_root=/tmp/boost" >> $GITHUB_OUTPUT
+          echo "runtime_package_script=tools/packages/libtorrent-rasterbar/build.sh" >> $GITHUB_OUTPUT
+          echo "runtime_package_control=tools/packages/libtorrent-rasterbar/control-runtime" >> $GITHUB_OUTPUT
+          echo "dev_package_control=tools/packages/libtorrent-rasterbar/control-dev" >> $GITHUB_OUTPUT
+          echo "python_package_control=tools/packages/libtorrent-rasterbar/control-python" >> $GITHUB_OUTPUT
+          echo "package_full_name=${package_prefix}-${stability}_${{ matrix.version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
+          echo "python_package_full_name=${python_package_prefix}-${stability}_${{ matrix.version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
+          echo "dev_package_full_name=${dev_package_prefix}-${stability}_${{ matrix.version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
+
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: downloaded_artifacts
-
-      - name: Create Git Tag
-        id: prepare_release
+          pattern: libtorrent-${{ matrix.version }}
+      
+      - name: Create release
+        id: create-release
         run: |
-          echo "today=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
-
-      - name: Create GitHub Release
-        id: create_release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Release ${{ steps.prepare_release.outputs.today }}
-          tag_name: v${{ steps.prepare_release.outputs.today }}
-          generate_release_notes: true
-          files: |
-            downloaded_artifacts/**/*.deb
-            downloaded_artifacts/**/*.json 
+          stability="${{ steps.vars.outputs.stability }}"
+          mkdir -p release_assets
+          find downloaded_artifacts/libtorrent-${{ matrix.version }} \
+            -name "${{ steps.vars.outputs.package_prefix }}-${stability}_${{ matrix.version }}*.deb" \
+            -o -name "${{ steps.vars.outputs.package_prefix }}-${stability}_${{ matrix.version }}*.json" \
+            -o -name "${{ steps.vars.outputs.python_package_prefix }}-${stability}_${{ matrix.version }}*.deb" \
+            -o -name "${{ steps.vars.outputs.python_package_prefix }}-${stability}_${{ matrix.version }}*.json" \
+            -o -name "${{ steps.vars.outputs.dev_package_prefix }}-${stability}_${{ matrix.version }}*.deb" \
+            -o -name "${{ steps.vars.outputs.dev_package_prefix }}-${stability}_${{ matrix.version }}*.json" \
+            | grep -v "dumptorrent\|libudns\|libxmlrpc\|mktorrent" \
+            | xargs -I{} cp {} release_assets/
+          echo "Checking libtorrent artifacts available:"
+          ls -la downloaded_artifacts/libtorrent-${{ matrix.version }}/
+          echo "Files copied to release_assets:"
+          ls -la release_assets/
+          LIB_COUNT=$(find release_assets -name "${{ steps.vars.outputs.package_prefix }}-${stability}_${{ matrix.version }}*.deb" | wc -l)
+          PYTHON_COUNT=$(find release_assets -name "${{ steps.vars.outputs.python_package_prefix }}-${stability}_${{ matrix.version }}*.deb" | wc -l)
+          DEV_COUNT=$(find release_assets -name "${{ steps.vars.outputs.dev_package_prefix }}-${stability}_${{ matrix.version }}*.deb" | wc -l)
+          if [ "$LIB_COUNT" -gt 0 ] || [ "$PYTHON_COUNT" -gt 0 ] || [ "$DEV_COUNT" -gt 0 ]; then
+            NOTES="## libtorrent-rasterbar ${{ matrix.version }} (${stability})"
+            if [ "$LIB_COUNT" -gt 0 ]; then
+              NOTES="$NOTES\n\n### C++ Library\n* ${{ steps.vars.outputs.package_prefix }}-${stability}: ${{ matrix.version }}"
+            fi
+            if [ "$DEV_COUNT" -gt 0 ]; then
+              NOTES="$NOTES\n* ${{ steps.vars.outputs.dev_package_prefix }}-${stability}: ${{ matrix.version }}"
+            fi
+            if [ "$PYTHON_COUNT" -gt 0 ]; then
+              NOTES="$NOTES\n\n### Python Bindings\n* ${{ steps.vars.outputs.python_package_prefix }}-${stability}: ${{ matrix.version }}"
+            fi
+            NOTES="$NOTES\n\nEach package is accompanied by its JSON metadata file for automated installations."
+            echo "Creating release v${{ matrix.version }}"
+            echo "Release notes:"
+            echo "$NOTES"
+            echo "Files to be included in release:"
+            ls -la release_assets/
+            FORMATTED_NOTES=$(echo -e "$NOTES")
+            gh release create \
+              "v${{ matrix.version }}" \
+              --title "libtorrent-rasterbar ${{ matrix.version }} (${stability})" \
+              --notes "$FORMATTED_NOTES" \
+              --draft=false \
+              --prerelease=${{ steps.vars.outputs.stability == 'next' }} \
+              release_assets/*
+          else
+            echo "No relevant package files found. Skipping release creation."
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
