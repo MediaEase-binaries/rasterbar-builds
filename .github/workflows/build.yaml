@@ -3,14 +3,12 @@ name: Build & Release libtorrent-rasterbar
 permissions: write-all
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       version:
-        description: 'libtorrent-rasterbar version to build'
+        description: "libtorrent-rasterbar version to build"
         required: false
-        default: 'all'
+        default: "all"
         type: choice
         options:
           - all
@@ -29,7 +27,7 @@ jobs:
       matrix: ${{ steps.set.outputs.matrix }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Generating matrix
         id: generate
@@ -40,6 +38,35 @@ jobs:
           echo "matrix<<EOF" >> $GITHUB_ENV
           cat matrix.json >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
+
+      - name: Filter matrix for workflow_dispatch
+        run: |
+          pip3 install --upgrade pyyaml
+          python3 << 'PY'
+          import os, sys, yaml
+          key = os.environ["MATRIX_VERSION_KEY"]
+          event = os.environ.get("GITHUB_EVENT_NAME", "")
+          sel = os.environ.get("WF_VERSION", "all")
+          with open("matrix.json") as f:
+              data = yaml.safe_load(f)
+          inc = list(data.get("include") or [])
+          if event == "workflow_dispatch" and sel and sel != "all":
+              inc = [r for r in inc if str(r.get(key)) == sel]
+              if not inc:
+                  sys.stderr.write(f"::error::No matrix entry where {key}={sel!r}\n")
+                  sys.exit(1)
+          with open("matrix.json", "w") as f:
+              yaml.safe_dump({"include": inc}, f, sort_keys=False)
+          print(yaml.safe_dump({"include": inc}, sort_keys=False))
+          PY
+          {
+            echo 'matrix<<EOF'
+            cat matrix.json
+            echo 'EOF'
+          } >> "$GITHUB_ENV"
+        env:
+          MATRIX_VERSION_KEY: libtorrent_version
+          WF_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || 'all' }}
 
       - name: Setup matrix
         id: set
@@ -56,16 +83,13 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
     container:
-      image: ${{ 
-        startsWith(matrix.os, 'debian-') && (matrix.os == 'debian-11' && 'debian:bullseye' || matrix.os == 'debian-12' && 'debian:bookworm' || 'debian:bookworm') ||
-        startsWith(matrix.os, 'ubuntu-') && format('{0}:{1}', 'ubuntu', matrix.os == 'ubuntu-latest' && 'latest' || matrix.os == 'ubuntu-18.04' && '18.04' || matrix.os == 'ubuntu-20.04' && '20.04' || matrix.os == 'ubuntu-22.04' && '22.04' || matrix.os == 'ubuntu-24.04' && '24.04' || matrix.os) || '' }}
+      image: debian:trixie
     env:
       DEBIAN_FRONTEND: noninteractive
-      COMMITTER_NAME:  ${{ secrets.COMMITTER_NAME }}
+      COMMITTER_NAME: ${{ secrets.COMMITTER_NAME }}
       COMMITTER_EMAIL: ${{ secrets.COMMITTER_EMAIL }}
-      BOOST_VERSION:   ${{ matrix.boost_version }}
-      STABILITY:       ${{ matrix.stability }}
-      GH_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+      BOOST_VERSION: ${{ matrix.boost_version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Debug context
@@ -74,23 +98,24 @@ jobs:
 
       - name: Install GH CLI
         uses: dev-hanz-ops/install-gh-cli-action@v0.2.1
-    
+
       - name: Bootstrap container (update + deps)
         run: |
-          upx="upx-ucl"
-          if [ "${{ matrix.os }}" = "debian-12" ]; then
-            echo "deb http://deb.debian.org/debian bookworm-backports main" >> /etc/apt/sources.list
-            upx="upx-ucl/bookworm-backports"
-          fi
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            apt-transport-https rsync $upx lsb-release curl wget imagemagick git gzip util-linux dnsutils dirmngr acl iptables-persistent software-properties-common psmisc gnupg2 ca-certificates gpg-agent iproute2 dos2unix nfs-common jq sudo locales debconf-utils net-tools build-essential bc automake make cmake checkinstall libnss3-tools nano zip unzip htop vnstat vnstati vsftpd subversion ssl-cert openssl libfcgi0ldbl libsqlite3-dev sqlite3 libtool libcppunit-dev libssl-dev fontconfig libfontconfig1 libfontconfig1-dev zlib1g-dev libbz2-dev libreadline-dev libcairo2-dev libcurl4-openssl-dev libgirepository1.0-dev llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev liblzma-dev python3 python3-apt python3-software-properties python3-wheel python3-psutil python3-pip python3-dev python3-all-dev python3-docopt python3-setuptools python3-venv expect nftables autoconf-archive debian-keyring debian-archive-keyring libicu-dev
+          apt-get update -qq
+          apt-get install -yqq --no-install-recommends \
+            ca-certificates curl wget git jq \
+            lsb-release gnupg debian-archive-keyring debian-keyring \
+            debconf-utils sudo \
+            build-essential cmake ninja-build pkg-config patch \
+            libssl-dev zlib1g-dev \
+            python3 python3-dev \
+            upx-ucl file dpkg gzip xz-utils
 
       - name: Pre-check
         id: pre-check
         run: |
           codename=$(lsb_release -cs)
-          EXPECTED_DEB="libtorrent-rasterbar_${{ matrix.stability }}_${{ matrix.libtorrent_version }}_${codename}.deb"
+          EXPECTED_DEB="krate-libtorrent-rasterbar_${{ matrix.libtorrent_version }}-1_amd64.deb"
           if gh release view "v${{ matrix.libtorrent_version }}" \
               --json assets --jq '.assets[].name' 2>/dev/null \
             | grep -xFq "$EXPECTED_DEB"; then
@@ -112,45 +137,46 @@ jobs:
           echo "metadata_script=tools/generate_metadata.sh" >> $GITHUB_OUTPUT
           echo "package_script=tools/generate_package.sh" >> $GITHUB_OUTPUT
           echo "source_dir=$PWD/libtorrent" >> $GITHUB_OUTPUT
-          echo "boost_root=/tmp/boost" >> $GITHUB_OUTPUT
           echo "runtime_package_script=tools/packages/libtorrent-rasterbar/build.sh" >> $GITHUB_OUTPUT
           echo "runtime_package_control=tools/packages/libtorrent-rasterbar/control-runtime" >> $GITHUB_OUTPUT
           echo "dev_package_control=tools/packages/libtorrent-rasterbar/control-dev" >> $GITHUB_OUTPUT
           echo "python_package_control=tools/packages/libtorrent-rasterbar/control-python" >> $GITHUB_OUTPUT
-          echo "package_full_name=${package_prefix}-${stability}_${{ matrix.libtorrent_version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
-          echo "python_package_full_name=${python_package_prefix}-${stability}_${{ matrix.libtorrent_version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
-          echo "dev_package_full_name=${dev_package_prefix}-${stability}_${{ matrix.libtorrent_version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
+          echo "package_full_name=krate-libtorrent-rasterbar_${{ matrix.libtorrent_version }}-1_amd64.deb" >> $GITHUB_OUTPUT
+          echo "python_package_full_name=krate-python3-libtorrent_${{ matrix.libtorrent_version }}-1_amd64.deb" >> $GITHUB_OUTPUT
+          echo "dev_package_full_name=krate-libtorrent-rasterbar-dev_${{ matrix.libtorrent_version }}-1_amd64.deb" >> $GITHUB_OUTPUT
 
       - name: Checkout code & tools
         if: steps.pre-check.outputs.should_build == 'true'
         run: |
           git clone --recursive --branch "v${{ matrix.libtorrent_version }}" \
             https://github.com/arvidn/libtorrent.git libtorrent
-          git clone https://github.com/MediaEase-binaries/tools tools
+          git clone https://github.com/krate-binaries/tools tools
+          find tools/ -name "*.sh" -exec chmod +x {} +
 
-      - name: Build and install boost
+      - name: Install Boost from boost-builds release
         if: steps.pre-check.outputs.should_build == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Building Boost ${{ matrix.boost_version }}..."
-          chmod +x tools/packages/boost/build.sh
-          tools/packages/boost/build.sh "${{ matrix.boost_version }}" --nobuild
-          find . -type f -executable -name "b2" -print 2>/dev/null | head -n 1 | xargs -I{} sudo ln -sf {} /usr/bin/b2 || echo "ERROR: No executable b2 file found"
-          find . -type f -executable -name "b2" -print 2>/dev/null | head -n 1 | xargs -I{} sudo ln -sf {} b2 || echo "ERROR: No executable b2 file found"
-          rm -f *.deb
-          echo "Boost ${{ matrix.boost_version }} installed successfully"
+          chmod +x tools/ci/install_boost_from_boost_builds.sh
+          tools/ci/install_boost_from_boost_builds.sh "${{ matrix.boost_version }}"
 
       - name: Patch libtorrent
         if: steps.pre-check.outputs.should_build == 'true'
         shell: bash
         run: |
+          cd libtorrent
+          if [[ "${{ matrix.libtorrent_version }}" == "2.0.5" ]]; then
+            echo "Applying bindings/python CMake egg_info fix for v2.0.5"
+            patch --fuzz=3 --ignore-whitespace -p1 < ../tools/extras/rasterbar/fix-python-bindings-egg-info-2.0.5.patch
+          fi
           if [[ "$(printf '%s\n' "${{ matrix.libtorrent_version }}" "2.0.6" | sort -V | head -n1)" != "2.0.6" ]]; then
-            echo "Patching libtorrent for version ${{ matrix.libtorrent_version }}"
-            cd libtorrent
+            echo "Patching allocating_handler for libtorrent ${{ matrix.libtorrent_version }}"
             patch --fuzz=3 --ignore-whitespace -p1 < ../tools/extras/rasterbar/fix-allocating_handler-buffer-sizes.patch
-            cd ..
           else
-            echo "No patch needed for libtorrent ${{ matrix.libtorrent_version }}"
-          fi       
+            echo "No allocating_handler patch for libtorrent ${{ matrix.libtorrent_version }}"
+          fi
+          cd ..
 
       - name: Build & package libtorrent
         if: steps.pre-check.outputs.should_build == 'true'
@@ -158,12 +184,11 @@ jobs:
         run: |
           chmod +x tools/packages/libtorrent-rasterbar/build.sh
           tools/packages/libtorrent-rasterbar/build.sh full_packages
-      
+
       - name: Create DEBIAN control files
         if: steps.pre-check.outputs.should_build == 'true'
         shell: bash
         run: |
-          stability="${{ matrix.stability }}"
           real_runtime_package_control="libtorrent/full_packages/pkg_runtime/DEBIAN/control"
           real_dev_package_control="libtorrent/full_packages/pkg_dev/DEBIAN/control"
           real_python_package_control="libtorrent/full_packages/pkg_python/DEBIAN/control"
@@ -199,7 +224,7 @@ jobs:
             echo "  - Package directory: $PKG_DIR"
             sed -i "s/@PACKAGE_NAME@/${prefix}/" "$control"
             sed -i "s/@MAINTAINER@/${COMMITTER_NAME} <${COMMITTER_EMAIL}>/" "$control"
-            sed -i "s/@REVISION@/1build1/g" "$control"
+            sed -i "s/@REVISION@/1/g" "$control"
             sed -i "s/@ARCHITECTURE@/amd64/g" "$control"
             sed -i "s/@VERSION@/${{ matrix.libtorrent_version }}/g" "$control"
             sed -i "s/@DATE@/${date}/g" "$control"
@@ -210,19 +235,15 @@ jobs:
             fi
             cp "$control" "$real_control"
           done
-          
+
       - name: Generating packages
         if: steps.pre-check.outputs.should_build == 'true'
         shell: bash
         run: |
-          stability="${{ matrix.stability }}"
-          runtime_prefix="libtorrent-rasterbar"
-          dev_prefix="libtorrent-rasterbar-dev"
-          python_prefix="python3-libtorrent"
           declare -A package_full_names
-          package_full_names[runtime]="${runtime_prefix}-${stability}_${{ matrix.libtorrent_version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
-          package_full_names[python]="${python_prefix}-${stability}_${{ matrix.libtorrent_version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
-          package_full_names[dev]="${dev_prefix}-${stability}_${{ matrix.libtorrent_version }}-1build1_amd64.deb" >> $GITHUB_OUTPUT
+          package_full_names[runtime]="krate-libtorrent-rasterbar_${{ matrix.libtorrent_version }}-1_amd64.deb"
+          package_full_names[python]="krate-python3-libtorrent_${{ matrix.libtorrent_version }}-1_amd64.deb"
+          package_full_names[dev]="krate-libtorrent-rasterbar-dev_${{ matrix.libtorrent_version }}-1_amd64.deb"
           echo "Generating packages..."
           for pkg in runtime dev python; do
             pkgfile="${package_full_names[$pkg]}"
@@ -239,31 +260,25 @@ jobs:
             dpkg-deb --build -Zxz -z9 -Sextreme --root-owner-group "$PKG_DIR" "$pkgfile"
             echo "Package $pkgfile created successfully"
           done
-        
+
       - name: Generate metadata
         if: steps.pre-check.outputs.should_build == 'true'
         run: |
-          deb_files=$(find . -name "*${{ matrix.libtorrent_version }}*.deb" 2>/dev/null || true)
+          deb_files=$(find . -maxdepth 3 -name "krate-*${{ matrix.libtorrent_version }}*.deb" 2>/dev/null || true)
           echo "Found DEB files: $deb_files"
           mkdir -p artifacts
           for deb_file in $deb_files; do
             echo "Processing DEB: $deb_file"
-            base=$(basename "$deb_file" .deb)
-            echo "Codename: ${{ steps.pre-check.outputs.codename }}"
-            distro=$(lsb_release -is | tr '[:upper:]' '[:lower:]')
-            os=$distro-${{ steps.pre-check.outputs.codename }}
-            base=${base%_amd64}
-            full_name="${base}_${os}_amd64.deb"
-            echo "Full name: $full_name"
-            cp "$deb_file" "artifacts/${full_name}"
-            echo "Generating metadata for $full_name"
+            base=$(basename "$deb_file")
+            cp "$deb_file" "artifacts/${base}"
+            echo "Generating metadata for ${base}"
             cd artifacts
             ../tools/generate_metadata.sh \
               --category "libtorrent" \
-              --tag      "${{ matrix.stability }}" \
+              --tag      "release" \
               --version  "${{ matrix.libtorrent_version }}" \
-              --os       "${{ steps.pre-check.outputs.codename }}" \
-              "$full_name"
+              --os       "${{ matrix.codename }}" \
+              "${base}"
             cd ..
           done
           echo "Final artifacts directory contents:"
@@ -283,11 +298,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['2.0.5', '2.0.6', '2.0.7', '2.0.8', '2.0.9', '2.0.10', '2.0.11']
+        version:
+          ["2.0.5", "2.0.6", "2.0.7", "2.0.8", "2.0.9", "2.0.10", "2.0.11"]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Checkout tools repository
+        uses: actions/checkout@v6
+        with:
+          repository: krate-binaries/tools
+          path: tools
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -299,45 +321,22 @@ jobs:
         id: prepare
         shell: bash
         run: |
-            mkdir -p release_assets
-            find downloaded_artifacts -type f \
-            \( -name "*libtorrent*${{ matrix.version }}*.deb" -o \
-              -name "*libtorrent*${{ matrix.version }}*.json" \) \
-            -exec cp {} release_assets/ \;
-            TEMP_DIR=$(mktemp -d)
-            PACKAGES_TABLE="$TEMP_DIR/packages.md"
-            CONFIG_TABLE="$TEMP_DIR/config.md"
-            {
-              echo "| Package | OS | Stability |"
-              echo "| ------- | -- | --------- |"
-              for f in release_assets/*.deb; do
-                if [ -f "$f" ]; then
-                  pkg=$(basename "$f")
-                  os=$(echo "$pkg" | grep -o "debian-[^ _]*\|ubuntu-[^ _]*" || echo "unknown")
-                  stability=$(echo "$pkg" | grep -o "stable\|oldstable\|next")
-                  echo "| $pkg | $os | $stability |"
-                fi
-              done
-            } > "$PACKAGES_TABLE"
-            {
-              cmake_cmd='-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DBUILD_SHARED_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -Dpython-bindings=ON -Dpython-egg-info=ON -DCMAKE_INSTALL_PREFIX="/usr/local" -DBOOST_ROOT="/usr/local" -DBOOST_INCLUDEDIR="/usr/local/include" -DBOOST_LIBRARYDIR="/usr/local/lib" -GNinja'
-              echo "| Packages | CMake Command |"
-              echo "| -------- | ------------- |"
-              echo "| All | \`${cmake_cmd}\` |"
-            } > "$CONFIG_TABLE"
-            echo "packages_table<<EOF" >> $GITHUB_OUTPUT
-            cat "$PACKAGES_TABLE" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-            echo "config_table<<EOF" >> $GITHUB_OUTPUT
-            cat "$CONFIG_TABLE" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-            echo "skip_release=false" >> $GITHUB_OUTPUT
-            if [[ -z "$(ls release_assets/*.deb 2>/dev/null)" ]]; then
-              echo "skip_release=true" >> $GITHUB_OUTPUT
-            fi  
-            echo "Files prepared for release:"
-            ls -la release_assets/
-            rm -rf "$TEMP_DIR"
+          mkdir -p release_assets
+          find downloaded_artifacts -type f \
+          \( -name "*libtorrent*${{ matrix.version }}*.deb" -o \
+            -name "*libtorrent*${{ matrix.version }}*.json" \) \
+          -exec cp {} release_assets/ \;
+          pip3 install --upgrade pyyaml
+          python3 tools/ci/release_notes.py \
+            --product rasterbar \
+            --version "${{ matrix.version }}" \
+            --assets-dir release_assets \
+            --github-output
+          echo "skip_release=false" >> $GITHUB_OUTPUT
+          if [[ -z "$(ls release_assets/*.deb 2>/dev/null)" ]]; then
+            echo "skip_release=true" >> $GITHUB_OUTPUT
+          fi
+          ls -la release_assets/
 
       - name: Create Release
         if: steps.prepare.outputs.skip_release == 'false'
@@ -349,61 +348,7 @@ jobs:
             release_assets/*
           draft: false
           prerelease: false
-          generate_release_notes: true
-          body: |
-            # libtorrent-rasterbar v${{ matrix.version }}
-
-            Pre-built libtorrent-rasterbar packages for various Linux distributions.
-
-            ## 🎯 Features
-
-            - Pre-compiled binaries ready to use
-            - Multiple distribution support
-            - Automated builds via GitHub Actions
-            - JSON metadata for automated installations
-            - Both runtime and development packages
-            - Python bindings included
-
-            ## 📦 Available Packages
-
-            ${{ steps.prepare.outputs.packages_table }}
-
-            ## 🔧 Build Configuration
-
-            ${{ steps.prepare.outputs.config_table }}
-
-            ## 📋 Installation
-
-            ### Manual Installation
-            1. Download the appropriate .deb package for your distribution
-            2. Install using: `sudo dpkg -i package_name.deb`
-            3. Fix any dependencies if needed: `sudo apt-get install -f`
-
-            ## 🔍 Package Details
-
-            - Three package types available:
-              - Runtime package (libtorrent-rasterbar)
-              - Development package (libtorrent-rasterbar-dev)
-              - Python bindings (python3-libtorrent)
-
-            - The packages are built with:
-              - Full C++17 support
-              - Position Independent Code (-fPIC)
-              - Multi-threading support
-              - Python bindings enabled
-              - System-wide installation
-
-            ## 📄 Metadata
-
-            Each package is accompanied by its JSON metadata file containing:
-            - Package information
-            - Checksums
-            - Dependencies
-            - Build configuration
-            - Distribution details
-
-            ## 📝 License
-
-            libtorrent-rasterbar is distributed under the [BSD License](https://github.com/arvidn/libtorrent/blob/master/LICENSE).
+          generate_release_notes: false
+          body: ${{ steps.prepare.outputs.release_body }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

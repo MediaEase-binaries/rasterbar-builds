@@ -1,80 +1,40 @@
 # libtorrent-rasterbar-builds
 
-This repository contains automated builds of [libtorrent-rasterbar](https://github.com/arvidn/libtorrent) for various Linux distributions. The builds are provided as Debian packages (.deb) and include runtime, development, and Python bindings packages.
+CI builds of [libtorrent](https://github.com/arvidn/libtorrent) (Rasterbar / libtorrent-rasterbar): runtime `.deb`, `-dev`, and Python bindings. **One set of packages per libtorrent version**, built on a **single reference image**; the `.deb` files are meant for recent **Debian and Ubuntu** on **amd64**, without separate builds per distro codename.
 
-## Available Packages
+## GitHub Actions
 
-For each version of libtorrent-rasterbar, we provide three packages:
-- `libtorrent-rasterbar-{stability}`: Runtime library
-- `libtorrent-rasterbar-dev-{stability}`: Development files
-- `python3-libtorrent-{stability}`: Python bindings
+The **Build & Release** workflow (`.github/workflows/build.yaml`) runs **only** on **`workflow_dispatch`**. Nothing runs automatically on **push** to `main`: open **Actions** → run the workflow manually (`all` or a specific libtorrent version).
 
-Where `{stability}` can be:
-- `oldstable`: For versions 2.0.5 to 2.0.9
-- `stable`: For version 2.0.10
-- `next`: For version 2.0.11 and future releases
+## Matrix (`matrix.py`)
 
-## Supported Distributions
+- **OS**: a single CI environment row (recent Debian reference; see `matrix.py`), not one row per end-user distro.
+- **Boost**: one shared version for all builds (see `boost_version` in `matrix.py`). CI installs the **`libboost-all-dev_*` artefact** from **boost-builds** (same script as deluge-builds), not a source compile.
+- **libtorrent**: several **2.0.x** versions listed in the matrix.
 
-- Ubuntu:
-  - 22.04 (Jammy) for versions 2.0.5 to 2.0.10
-  - 24.04 (Noble) for version 2.0.11+
-- Debian:
-  - 11 (Bullseye) for versions 2.0.5 to 2.0.10
-  - 12 (Bookworm) for version 2.0.11+
+## Debian packages
+
+Each **libtorrent_version** produces three artifacts (release **filenames** use the `krate-` prefix):
+
+| Role        | Typical filename                                   |
+| ----------- | -------------------------------------------------- |
+| Runtime     | `krate-libtorrent-rasterbar_<ver>-1_amd64.deb`     |
+| Development | `krate-libtorrent-rasterbar-dev_<ver>-1_amd64.deb` |
+| Python      | `krate-python3-libtorrent_<ver>-1_amd64.deb`       |
+
+Debian **`Package:`** fields remain **`libtorrent-rasterbar`**, **`libtorrent-rasterbar-dev`**, **`python3-libtorrent`** (see the `tools` repo / `control-*` templates).
 
 ## Installation
 
-### Manual Installation
+1. Download the `.deb` files for the desired libtorrent version from [Releases](https://github.com/krate-binaries/libtorrent-rasterbar-builds/releases).
+2. Install with `sudo dpkg -i …` then `sudo apt-get install -f` if needed.
 
-1. Download the appropriate .deb files for your distribution from the [Releases](https://github.com/MediaEase-binaries/libtorrent-rasterbar-builds/releases) page.
-2. Install the packages using:
-   ```bash
-   sudo dpkg -i libtorrent-rasterbar-{stability}_{version}_{distro}_{arch}.deb
-   sudo dpkg -i libtorrent-rasterbar-dev-{stability}_{version}_{distro}_{arch}.deb
-   sudo dpkg -i python3-libtorrent-{stability}_{version}_{distro}_{arch}.deb
-   ```
+## JSON metadata
 
-## Build Information
+Each `.deb` may ship with JSON from `tools/generate_metadata.sh` (checksums, OS, category, metadata **tag** — typically `release`).
 
-### The JSON Metadata
+## License
 
-Each package comes with a JSON metadata file that can be used for automated installations. The metadata includes:
-- Package name
-- Version
-- Distribution codename
-- Dependencies
-- Installation instructions
+This repository follows the LICENSE file.
 
-### Dependencies
-
-The packages are built with the following dependencies:
-- Boost ${boost_version} (built from source)
-- Python 3.x
-- OpenSSL
-- zlib
-
-### CMake Configuration
-
-The packages are built using CMake with the following configuration:
-```cmake
--DCMAKE_BUILD_TYPE=Release
--DCMAKE_INSTALL_PREFIX=/usr/local
--DCMAKE_CXX_STANDARD=17
--DBUILD_SHARED_LIBS=ON
--DCMAKE_POSITION_INDEPENDENT_CODE=ON
--Dpython-bindings=ON
--Dpython-egg-info=ON
--DBOOST_ROOT="/usr/local"
--DBOOST_INCLUDEDIR="/usr/local/include"
--DBOOST_LIBRARYDIR="/usr/local/lib"
--GNinja
-```
-
-## Version Matrix
-
-| libtorrent Version | Boost Version | Stability | Ubuntu | Debian |
-|-------------------|---------------|-----------|---------|---------|
-| 2.0.5 - 2.0.9 | 1.82.0 | oldstable | 22.04 | 11 |
-| 2.0.10 | 1.82.0 | stable | 22.04 | 11 |
-| 2.0.11 | 1.88.0_rc1 | next | 24.04 | 12 |
+libtorrent is licensed under the [BSD license](https://github.com/arvidn/libtorrent/blob/master/LICENSE).
